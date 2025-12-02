@@ -58,7 +58,7 @@
 - (BOOL)prefersStatusBarHidden {
     return YES;
 }
- 
+
 - (UIViewController*)childViewControllerForStatusBarHidden {
     return nil;
 }
@@ -105,6 +105,10 @@
     } else {
         // all the work occurs here
         CDVAudioRecorderViewController* audioViewController = [[CDVAudioRecorderViewController alloc] initWithCommand:self duration:duration callbackId:callbackId];
+
+        if (@available(iOS 13.0, *)) {
+            audioViewController.modalInPresentation = YES;
+        }
 
         // Now create a nav controller and display the view...
         CDVAudioNavigationController* navController = [[CDVAudioNavigationController alloc] initWithRootViewController:audioViewController];
@@ -616,6 +620,7 @@
 @interface CDVAudioRecorderViewController () <UIAdaptivePresentationControllerDelegate> {
     UIStatusBarStyle _previousStatusBarStyle;
 }
+@property (nonatomic, getter=isModalInPresentation) BOOL modalInPresentation;
 @end
 
 @implementation CDVAudioRecorderViewController
@@ -676,7 +681,7 @@
         }
     }
 
-    [self.avSession setCategory:AVAudioSessionCategoryPlayAndRecord error:&error];
+    [self.avSession setCategory:AVAudioSessionCategoryPlayAndRecord error:nil];
     
     // create file to record to in temporary dir
 
@@ -715,25 +720,33 @@
     CGFloat topInset = self.navigationController.navigationBar.frame.size.height;
     CGFloat bottomInset = 10;
 
-    // make backgrounds
-    NSString* microphoneResource = @"CDVCapture.bundle/microphone";
-
-    BOOL isIphone5 = ([[UIScreen mainScreen] bounds].size.width == 568 && [[UIScreen mainScreen] bounds].size.height == 320) || ([[UIScreen mainScreen] bounds].size.height == 568 && [[UIScreen mainScreen] bounds].size.width == 320);
-    if (isIphone5) {
-        microphoneResource = @"CDVCapture.bundle/microphone-568h";
-    }
-
     NSBundle* cdvBundle = [NSBundle bundleForClass:[CDVCapture class]];
-    UIImage* microphone = [UIImage imageNamed:[self resolveImageResource:microphoneResource] inBundle:cdvBundle compatibleWithTraitCollection:nil];
-    UIImageView* microphoneView = [[UIImageView alloc] initWithFrame:CGRectMake(0, 0, viewRect.size.width, viewRect.size.height)];
-    [microphoneView setImage:microphone];
-    [microphoneView setContentMode:UIViewContentModeScaleAspectFill];
-    [microphoneView setUserInteractionEnabled:NO];
-    [microphoneView setIsAccessibilityElement:NO];
-    [self.view addSubview:microphoneView];
+
+    self.recordImage = [UIImage imageNamed:[self resolveImageResource:@"CDVCapture.bundle/record_button"] inBundle:cdvBundle compatibleWithTraitCollection:nil];
+    self.stopRecordImage = [UIImage imageNamed:[self resolveImageResource:@"CDVCapture.bundle/stop_button"] inBundle:cdvBundle compatibleWithTraitCollection:nil];
+
+    self.doneButton = [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemDone target:self action:@selector(dismissAudioView:)];
+    [self.doneButton setStyle:UIBarButtonItemStyleDone];
+    self.navigationItem.rightBarButtonItem = self.doneButton;
+    self.navigationController.navigationBar.backgroundColor = [UIColor colorWithRed:0.38 green:0.38 blue:0.38 alpha:0.95];    
+
+    int modalWidth = self.navigationController.view.bounds.size.width;
+    int modalHeight = self.navigationController.view.bounds.size.height;
+    int controlsHeight = recordImage.size.height * 2;
+    int mainViewHeight = modalHeight - controlsHeight - self.navigationController.navigationBar.bounds.size.height;
+
+    CGRect viewRect = CGRectMake(0, 0, modalWidth,  mainViewHeight);
+
+    UIView* tmp = [[UIView alloc] initWithFrame:viewRect];
+    [tmp setAutoresizingMask:UIViewAutoresizingFlexibleHeight | UIViewAutoresizingFlexibleWidth];
+
+
+    UIView* microphoneView = [[UIView alloc] initWithFrame:CGRectMake(0, 0, modalWidth, mainViewHeight)];
+    [microphoneView setBackgroundColor: [UIColor colorWithRed:0.42 green:0.42 blue:0.42 alpha:0.9]];
 
     // add bottom bar view
-    UIImage* grayBkg = [UIImage imageNamed:[self resolveImageResource:@"CDVCapture.bundle/controls_bg"] inBundle:cdvBundle compatibleWithTraitCollection:nil];
+    UIView* controls = [[UIView alloc] initWithFrame:CGRectMake(0, mainViewHeight, modalWidth, controlsHeight)];
+    [controls setBackgroundColor: [UIColor colorWithRed:0.38 green:0.38 blue:0.38 alpha:0.95]]
     UIImageView* controls = [[UIImageView alloc] initWithFrame:CGRectMake(0, viewRect.size.height - grayBkg.size.height - bottomInset,
                                                                           viewRect.size.width, grayBkg.size.height + bottomInset)];
     [controls setImage:grayBkg];
@@ -741,45 +754,43 @@
     [controls setIsAccessibilityElement:NO];
     [self.view addSubview:controls];
 
-    // make red recording background view
-    UIImage* recordingBkg = [UIImage imageNamed:[self resolveImageResource:@"CDVCapture.bundle/recording_bg"] inBundle:cdvBundle compatibleWithTraitCollection:nil];
-    UIColor* background = [UIColor colorWithPatternImage:recordingBkg];
-    self.recordingView = [[UIView alloc] initWithFrame:CGRectMake(0, topInset, viewRect.size.width, recordingBkg.size.height)];
-    [self.recordingView setBackgroundColor:background];
-    [self.recordingView setHidden:YES];
-    [self.recordingView setUserInteractionEnabled:NO];
-    [self.recordingView setIsAccessibilityElement:NO];
-    [self.view addSubview:self.recordingView];
 
-    // add label
-    self.timerLabel = [[UILabel alloc] initWithFrame:CGRectMake(0, topInset, viewRect.size.width, recordingBkg.size.height)];
+    self.timerLabel = [[UILabel alloc] initWithFrame:CGRectMake(0, 0, 0, 0)];
+
     [self.timerLabel setBackgroundColor:[UIColor clearColor]];
     [self.timerLabel setTextColor:[UIColor whiteColor]];
+    [self.timerLabel setFont:[UIFont systemFontOfSize:90]];
     [self.timerLabel setTextAlignment:NSTextAlignmentCenter];
-    [self.timerLabel setText:@"0:00"];
+    [self.timerLabel setText:@"00:00"];
+    [self.timerLabel sizeToFit];
+
+
+    int timerLabelWidth = self.timerLabel.frame.size.width;
+    int timerLabelHeight = self.timerLabel.frame.size.height;
+    int startHeight = (mainViewHeight - timerLabelHeight) / 2;
+
+    [self.timerLabel setFrame:CGRectMake(0, startHeight, modalWidth, timerLabelHeight)];
+
     [self.timerLabel setAccessibilityHint:PluginLocalizedString(captureCommand, @"recorded time in minutes and seconds", nil)];
+    
     self.timerLabel.accessibilityTraits |= UIAccessibilityTraitUpdatesFrequently;
     self.timerLabel.accessibilityTraits &= ~UIAccessibilityTraitStaticText;
+    
     [self.view addSubview:self.timerLabel];
 
     // Add record button
 
-    self.recordImage = [UIImage imageNamed:[self resolveImageResource:@"CDVCapture.bundle/record_button"] inBundle:cdvBundle compatibleWithTraitCollection:nil];
-    self.stopRecordImage = [UIImage imageNamed:[self resolveImageResource:@"CDVCapture.bundle/stop_button"] inBundle:cdvBundle compatibleWithTraitCollection:nil];
     self.recordButton.accessibilityTraits |= [self accessibilityTraits];
-    self.recordButton = [[UIButton alloc] initWithFrame:CGRectMake((viewRect.size.width - self.recordImage.size.width) / 2,
-                                                                   microphoneView.frame.size.height - bottomInset - grayBkg.size.height +
-                                                                    ((grayBkg.size.height - self.recordImage.size.height) / 2),
-                                                                   self.recordImage.size.width, self.recordImage.size.height)];
+
+    startHeight = mainViewHeight  + (controlsHeight - recordImage.size.height) / 2;
+
+    self.recordButton = [[UIButton alloc] initWithFrame:CGRectMake(0, startHeight, modalWidth, recordImage.size.height)];
+
     [self.recordButton setAccessibilityLabel:PluginLocalizedString(captureCommand, @"toggle audio recording", nil)];
     [self.recordButton setImage:recordImage forState:UIControlStateNormal];
-    [self.recordButton addTarget:self action:@selector(processButton:) forControlEvents:UIControlEventTouchUpInside];
+    [self.recordButton addTarget:self action:@selector(processButtonAction:) forControlEvents:UIControlEventTouchUpInside];
     [self.view addSubview:recordButton];
-
-    // make and add done button to navigation bar
-    self.doneButton = [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemDone target:self action:@selector(dismissAudioView:)];
-    [self.doneButton setStyle:UIBarButtonItemStyleDone];
-    self.navigationItem.rightBarButtonItem = self.doneButton;
+    [self setView:tmp];
 }
 
 - (UIInterfaceOrientationMask)supportedInterfaceOrientations
@@ -789,6 +800,50 @@
 
     orientation = orientation | (supported & UIInterfaceOrientationMaskPortraitUpsideDown);
     return orientation;
+}
+
+- (void)selectAudioModalAction:(id)sender
+{
+     UIAlertController * alert = [UIAlertController
+                                 alertControllerWithTitle:PluginLocalizedString(captureCommand, @"overwrite modal title", nil)
+                                 message:PluginLocalizedString(captureCommand, @"overwrite modal description", nil)
+                                 preferredStyle:UIAlertControllerStyleAlert];
+
+    //Add Buttons
+    UIAlertAction* saveButton = [UIAlertAction
+                                actionWithTitle:PluginLocalizedString(captureCommand, @"save", nil)
+                                style:UIAlertActionStyleDefault
+                                handler:^(UIAlertAction * action) {
+                                    [self dismissAudioView:(id)sender];
+                                }];
+
+    UIAlertAction* overwriteButton = [UIAlertAction
+                               actionWithTitle:PluginLocalizedString(captureCommand, @"overwrite", nil)
+                               style:UIAlertActionStyleDefault
+                               handler:^(UIAlertAction * action) {
+                                    [self processButton:(id) sender];
+                               }];
+
+    [alert addAction:saveButton];
+    [alert addAction:overwriteButton];
+
+    [self presentViewController:alert animated:YES completion:nil];
+}
+
+- (void)processButtonAction:(id)sender
+{
+    if (self.avRecorder.recording) {
+        // stop recording
+        [self.avRecorder stop];
+        self.isTimed = NO;  // recording was stopped via button so reset isTimed
+        // view cleanup will occur in audioRecordingDidFinishRecording
+    } else {
+        if (!self.pluginResult) {
+            [self processButton:(id) sender];
+        } else {
+            [self selectAudioModalAction:(id) sender];
+        }
+    }
 }
 
 - (void)processButton:(id)sender
@@ -805,27 +860,26 @@
         __weak CDVAudioRecorderViewController* weakSelf = self;
 
         void (^startRecording)(void) = ^{
-            [weakSelf.avSession setActive:YES error:&error];
-            if (error) {
-                // can't continue without active audio session
-                weakSelf.errorCode = CAPTURE_INTERNAL_ERR;
-                [weakSelf dismissAudioView:nil];
-            } else {
-                [weakSelf.recordButton setImage:weakSelf.stopRecordImage forState:UIControlStateNormal];
-                weakSelf.recordButton.accessibilityTraits &= ~[self accessibilityTraits];
-                [weakSelf.recordingView setHidden:NO];
-                if (weakSelf.duration) {
-                    weakSelf.isTimed = true;
-                    [weakSelf.avRecorder recordForDuration:[weakSelf.duration doubleValue]];
-                } else {
-                    [weakSelf.avRecorder record];
-                }
-                [weakSelf.timerLabel setText:@"0.00"];
-                weakSelf.timer = [NSTimer scheduledTimerWithTimeInterval:0.5f target:weakSelf selector:@selector(updateTime) userInfo:nil repeats:YES];
-                weakSelf.doneButton.enabled = NO;
-            }
-            UIAccessibilityPostNotification(UIAccessibilityLayoutChangedNotification, nil);
-        };
+           [weakSelf.avSession setCategory:AVAudioSessionCategoryRecord error:&error];
+                 [weakSelf.avSession setActive:YES error:&error];
+                 if (error) {
+                     // can't continue without active audio session
+                     weakSelf.errorCode = CAPTURE_INTERNAL_ERR;
+                     [weakSelf dismissAudioView:nil];
+                 } else {
+                     if (weakSelf.duration) {
+                         weakSelf.isTimed = true;
+                         [weakSelf.avRecorder recordForDuration:[duration doubleValue]];
+                         [weakSelf.avRecorder recordForDuration:[weakSelf.duration doubleValue]];// CHECK THAT!
+                     } else {
+                         [weakSelf.avRecorder record];
+                     }
+                     [weakSelf.timerLabel setText:@"00:00"];
+                     weakSelf.timer = [NSTimer scheduledTimerWithTimeInterval:0.5f target:weakSelf selector:@selector(updateTime) userInfo:nil repeats:YES];
+                     weakSelf.doneButton.enabled = NO;
+                 }
+                 UIAccessibilityPostNotification(UIAccessibilityLayoutChangedNotification, nil);
+             };
 
         SEL rrpSel = NSSelectorFromString(@"requestRecordPermission:");
         if ([self.avSession respondsToSelector:rrpSel])
@@ -931,7 +985,7 @@
     int min = interval / 60;
 
     if (interval < 60) {
-        return [NSString stringWithFormat:@"0:%02d", interval];
+        return [NSString stringWithFormat:@"00:%02d", interval];
     } else {
         return [NSString stringWithFormat:@"%d:%02d", min, secs];
     }
